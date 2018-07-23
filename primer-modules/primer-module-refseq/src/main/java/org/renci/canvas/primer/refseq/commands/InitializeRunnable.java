@@ -22,6 +22,7 @@ public class InitializeRunnable implements Runnable {
 
     @Override
     public void run() {
+        logger.debug("ENTERING run()");
 
         try {
             logger.info("Loading GroupingTypes");
@@ -47,7 +48,6 @@ public class InitializeRunnable implements Runnable {
         } catch (Exception e) {
             logger.error(e.getMessage(), e);
         }
-
     }
 
 }
