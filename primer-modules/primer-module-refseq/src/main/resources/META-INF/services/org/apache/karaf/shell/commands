@@ -1,1 +1,3 @@
+org.renci.canvas.primer.refseq.commands.InitializeAction
+org.renci.canvas.primer.refseq.commands.DownloadAction
 org.renci.canvas.primer.refseq.commands.PersistAction

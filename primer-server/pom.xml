@@ -3,13 +3,13 @@
   <parent>
     <groupId>org.renci.canvas</groupId>
     <artifactId>primer</artifactId>
-    <version>0.0.41</version>
+    <version>0.0.43-SNAPSHOT</version>
   </parent>
   <name>CANVAS :: Primer :: Server</name>
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.renci.canvas.primer</groupId>
   <artifactId>primer-server</artifactId>
-  <version>0.0.41</version>
+  <version>0.0.43-SNAPSHOT</version>
   <packaging>karaf-assembly</packaging>
   <properties>
     <maven.site.plugin.skip>true</maven.site.plugin.skip>    
@@ -20,7 +20,7 @@
       <groupId>org.renci.canvas.primer</groupId>
       <artifactId>primer-features</artifactId>
       <classifier>features</classifier>
-      <version>0.0.41</version>
+      <version>0.0.43-SNAPSHOT</version>
       <type>xml</type>
       <scope>runtime</scope>
     </dependency>    

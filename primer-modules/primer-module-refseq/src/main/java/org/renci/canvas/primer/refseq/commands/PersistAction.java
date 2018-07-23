@@ -2,9 +2,7 @@ package org.renci.canvas.primer.refseq.commands;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.ObjectInputStream;
-import java.io.ObjectOutputStream;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
@@ -16,8 +14,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.TreeSet;
-import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -25,7 +21,6 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
-import java.util.zip.GZIPOutputStream;
 
 import org.apache.commons.collections.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -63,13 +58,6 @@ import org.renci.canvas.dao.refseq.model.TranscriptRefSeqVersion;
 import org.renci.canvas.dao.refseq.model.TranscriptRefSeqVersionPK;
 import org.renci.canvas.primer.commons.FTPFactory;
 import org.renci.canvas.primer.commons.UpdateDiagnosticResultVersionCallable;
-import org.renci.gbff.GBFFFilter;
-import org.renci.gbff.GBFFManager;
-import org.renci.gbff.filter.GBFFAndFilter;
-import org.renci.gbff.filter.GBFFFeatureSourceOrganismNameFilter;
-import org.renci.gbff.filter.GBFFFeatureTypeNameFilter;
-import org.renci.gbff.filter.GBFFSequenceAccessionPrefixFilter;
-import org.renci.gbff.filter.GBFFSourceOrganismNameFilter;
 import org.renci.gbff.model.Sequence;
 import org.renci.gbff.model.TranslationException;
 import org.renci.gff3.GFF3Manager;
@@ -84,8 +72,6 @@ public class PersistAction implements Action {
     private static final Logger logger = LoggerFactory.getLogger(PersistAction.class);
 
     private static final Pattern locationPattern = Pattern.compile("(?<start>\\d+)\\.+?(?<stop>\\d+)?");
-
-    private static final GBFFManager gbffMgr = GBFFManager.getInstance();
 
     @Reference
     private CANVASDAOBeanService canvasDAOBeanService;
@@ -102,41 +88,16 @@ public class PersistAction implements Action {
             long start = System.currentTimeMillis();
 
             try {
+
                 List<String> remoteFileNames = FTPFactory.ncbiListRemoteFiles("/refseq/release/release-catalog", "release");
                 if (CollectionUtils.isEmpty(remoteFileNames)) {
                     logger.error("No remote files found to get version");
                     return;
                 }
 
-                List<GroupingType> allGroupingTypes = canvasDAOBeanService.getGroupingTypeDAO().findAll();
-
-                String first = remoteFileNames.get(0);
-                String refseqVersion = first.substring(7, first.indexOf("."));
-                logger.info("refseqVersion = {}", refseqVersion);
-
-                Path outputPath = Paths.get(System.getProperty("karaf.data"), "refseq");
-                File refseqDir = outputPath.toFile();
-                File refseqTmpDir = new File(refseqDir, "tmp");
-                refseqTmpDir.mkdirs();
-
-                List<File> serializedSequenceFiles = new ArrayList<>();
-
-                List<File> gbffFiles = FTPFactory.ncbiDownloadFiles(refseqDir, "/refseq/release/vertebrate_mammalian",
-                        "vertebrate_mammalian", "rna.gbff.gz");
-
-                Path mappingsPath = Paths.get(System.getProperty("karaf.data"), "refseq", "mappings");
-                File mappingsDir = mappingsPath.toFile();
-                mappingsDir.mkdirs();
-
-                List<File> alignmentFiles = FTPFactory.ncbiDownloadFiles(mappingsDir, "/refseq/H_sapiens/alignments", "GCF",
-                        "refseq_alignments.gff3");
-
-                List<GBFFFilter> filters = Arrays
-                        .asList(new GBFFFilter[] { new GBFFSequenceAccessionPrefixFilter(Arrays.asList(new String[] { "NM_", "XM_" })),
-                                new GBFFSourceOrganismNameFilter("Homo sapiens"), new GBFFFeatureSourceOrganismNameFilter("Homo sapiens"),
-                                new GBFFFeatureTypeNameFilter("CDS"), new GBFFFeatureTypeNameFilter("source") });
-
-                GBFFAndFilter gbffFilter = new GBFFAndFilter(filters);
+                Path alignmentPath = Paths.get(System.getProperty("karaf.data"), "refseq", "alignment");
+                File alignmentDir = alignmentPath.toFile();
+                List<File> alignmentFiles = Arrays.asList(alignmentDir.listFiles());
 
                 GFF3Manager gff3Mgr = GFF3Manager.getInstance();
                 Map<String, List<GFF3Record>> alignmentMap = new HashMap<>();
@@ -145,58 +106,25 @@ public class PersistAction implements Action {
                     List<GFF3Record> results = gff3Mgr.deserialize(alignmentFile);
                     if (CollectionUtils.isNotEmpty(results)) {
                         for (GFF3Record record : results) {
-                            if (!alignmentMap.containsKey(record.getSequenceId())) {
-                                alignmentMap.put(record.getSequenceId(), new ArrayList<>());
-                            }
+                            alignmentMap.putIfAbsent(record.getSequenceId(), new ArrayList<>());
                             alignmentMap.get(record.getSequenceId()).add(record);
                         }
                     }
                 }
 
-                List<Sequence> sequences = new ArrayList<>();
+                String first = remoteFileNames.get(0);
+                String refseqVersion = first.substring(7, first.indexOf("."));
+                logger.info("refseqVersion = {}", refseqVersion);
 
-                for (File f : gbffFiles) {
-
-                    logger.info("parsing GenBankFlatFile: {}", f.getAbsolutePath());
-                    List<Sequence> sequenceList = gbffMgr.deserialize(gbffFilter, false, f);
-
-                    if (CollectionUtils.isNotEmpty(sequenceList)) {
-                        logger.info("sequences found: {}", sequenceList.size());
-                        for (Sequence sequence : sequenceList) {
-                            sequences.add(sequence);
-                            if ((sequences.size() % 500) == 0) {
-
-                                File tmpFile = new File(refseqTmpDir, String.format("%s.txt", UUID.randomUUID().toString()));
-                                serializedSequenceFiles.add(tmpFile);
-
-                                try (FileOutputStream fos = new FileOutputStream(tmpFile);
-                                        GZIPOutputStream gzipos = new GZIPOutputStream(fos, Double.valueOf(Math.pow(2, 14)).intValue());
-                                        ObjectOutputStream oos = new ObjectOutputStream(gzipos)) {
-                                    logger.info("serializing: {}", tmpFile.getAbsolutePath());
-                                    oos.writeObject(sequences);
-                                }
-                                sequences.clear();
-
-                            }
-
-                        }
-
-                    }
-
-                    f.delete();
-                }
-
-                File tmpFile = new File(refseqTmpDir, String.format("%s.txt", UUID.randomUUID().toString()));
-                serializedSequenceFiles.add(tmpFile);
-
-                try (FileOutputStream fos = new FileOutputStream(tmpFile);
-                        GZIPOutputStream gzipos = new GZIPOutputStream(fos, Double.valueOf(Math.pow(2, 14)).intValue());
-                        ObjectOutputStream oos = new ObjectOutputStream(gzipos)) {
-                    oos.writeObject(sequences);
-                }
-                sequences.clear();
+                List<GroupingType> allGroupingTypes = canvasDAOBeanService.getGroupingTypeDAO().findAll();
 
                 GroupingType singleGroupingType = allGroupingTypes.stream().filter(a -> a.getId().equals("single")).findAny().get();
+
+                Path outputPath = Paths.get(System.getProperty("karaf.data"), "refseq");
+                File refseqDir = outputPath.toFile();
+
+                List<File> serializedSequenceFiles = Arrays.asList(refseqDir.listFiles());
+
                 logger.info("serializedSequenceFiles.size(): {}", serializedSequenceFiles.size());
 
                 for (File serializedSequenceFile : serializedSequenceFiles) {
@@ -206,7 +134,7 @@ public class PersistAction implements Action {
                     try (FileInputStream fis = new FileInputStream(serializedSequenceFile);
                             GZIPInputStream gzipis = new GZIPInputStream(fis, Double.valueOf(Math.pow(2, 16)).intValue());
                             ObjectInputStream ois = new ObjectInputStream(gzipis)) {
-                        logger.info("deserializing: {}", tmpFile.getAbsolutePath());
+                        logger.info("deserializing: {}", serializedSequenceFile.getAbsolutePath());
                         sequenceList = (List<Sequence>) ois.readObject();
                     } catch (Exception e) {
                         logger.error(e.getMessage(), e);
@@ -283,24 +211,13 @@ public class PersistAction implements Action {
     private void persistMappings(String refseqVersion, Transcript transcript, Map<String, List<GFF3Record>> map) throws CANVASDAOException {
         logger.debug("ENTERING persistMappings(String, Transcript, List<File>)");
 
-        TreeSet<GFF3Record> tmp = new TreeSet<>();
+        Map<String, List<GFF3Record>> filteredMap = map.entrySet().stream()
+                .filter(a -> CollectionUtils.isNotEmpty(a.getValue().stream()
+                        .filter(b -> b.getAttributes().get("Target").startsWith(transcript.getId())).collect(Collectors.toSet())))
+                .collect(Collectors.toMap(p -> p.getKey(), p -> p.getValue()));
 
-        for (String key : map.keySet()) {
-            List<GFF3Record> recordsByKey = map.get(key);
-            Set<GFF3Record> filteredRecords = recordsByKey.stream()
-                    .filter(a -> a.getAttributes().get("Target").startsWith(transcript.getId())).collect(Collectors.toSet());
-            tmp.addAll(filteredRecords);
-        }
-
-        Map<String, TreeSet<GFF3Record>> asdf = new HashMap<>();
-
-        tmp.stream().map(a -> a.getSequenceId()).distinct().forEach(a -> asdf.put(a, new TreeSet<>()));
-
-        tmp.stream().forEach(a -> asdf.get(a.getSequenceId()).add(a));
-
-        for (String sequenceId : asdf.keySet()) {
-
-            TreeSet<GFF3Record> records = asdf.get(sequenceId);
+        for (String sequenceId : filteredMap.keySet()) {
+            List<GFF3Record> records = map.get(sequenceId);
 
             String genomeReferenceAccession = sequenceId;
             String strand = records.stream().map(a -> a.getStrand().getSymbol()).distinct().collect(Collectors.joining());
@@ -311,12 +228,14 @@ public class PersistAction implements Action {
                 return;
             }
 
+            logger.info("genomeReferenceAccession: {}", genomeReferenceAccession);
+
             if ("null".equals(strand)) {
                 logger.error("Could not get valid strand for: {}", genomeReferenceAccession);
                 return;
             }
 
-            logger.info(genomeReferenceAccession);
+            logger.info("strand: {}", strand);
 
             GenomeRefSeq genomeRefSeq = canvasDAOBeanService.getGenomeRefSeqDAO().findById(genomeReferenceAccession);
             if (genomeRefSeq == null) {
@@ -364,22 +283,29 @@ public class PersistAction implements Action {
 
             int recordIdx = 1;
             for (GFF3Record record : records) {
+
+                String gap = record.getAttributes().get("Gap");
+
+                String target = record.getAttributes().get("Target");
+                String[] parts = target.split(" ");
+
+                String exonStart = parts[1];
+                String exonStop = parts[2];
+
                 try {
                     TranscriptMapsExonsPK exonPK = new TranscriptMapsExonsPK(transcriptMaps.getId(), recordIdx++);
                     TranscriptMapsExons exon = new TranscriptMapsExons(exonPK);
                     exon.setTranscriptMaps(transcriptMaps);
-
-                    String target = record.getAttributes().get("Target");
-                    String[] parts = target.split(" ");
-
-                    String exonStart = parts[1];
-                    String exonStop = parts[2];
 
                     exon.setContigStart(record.getStart());
                     contigCoordinates.add(record.getStart());
 
                     exon.setContigEnd(record.getEnd());
                     contigCoordinates.add(record.getEnd());
+
+                    if (StringUtils.isNotEmpty(gap)) {
+                        exon.setGap(gap);
+                    }
 
                     exon.setTranscriptStart(Integer.valueOf(exonStart));
                     exon.setTranscriptEnd(Integer.valueOf(exonStop));
@@ -389,6 +315,7 @@ public class PersistAction implements Action {
                 } catch (Exception e) {
                     logger.error(e.getMessage(), e);
                 }
+
             }
 
             transcriptMaps.setMinContig(Collections.min(contigCoordinates));
